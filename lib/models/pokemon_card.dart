@@ -1,25 +1,30 @@
 class PokemonCard {
   final String id;
-  final String imageUrl;
   final String name;
+  final String imageUrl;
   final String expansion;
-  final String expansionNumber;
+  bool isOffered;
+  bool isWanted;
+  int? offeredCount;
+  int? wantedCount;
 
   PokemonCard({
     required this.id,
-    required this.imageUrl,
     required this.name,
+    required this.imageUrl,
     required this.expansion,
-    required this.expansionNumber,
+    this.isOffered = false,
+    this.isWanted = false,
+    this.offeredCount,
+    this.wantedCount,
   });
 
   factory PokemonCard.fromJson(Map<String, dynamic> json) {
     return PokemonCard(
       id: json['id'],
-      imageUrl: json['image_url'],
       name: json['name'],
+      imageUrl: json['image_url'],
       expansion: json['expansion'],
-      expansionNumber: json['expansion_number'].toString(),
     );
   }
 }

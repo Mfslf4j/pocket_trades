@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../models/pokemon_card.dart';
+import '../services/trade_service.dart';
+import '../widgets/pokemon_card_widget.dart';
+import 'trade_list_screen.dart';
 
 class CardListScreen extends StatefulWidget {
   const CardListScreen({super.key});
@@ -10,278 +13,194 @@ class CardListScreen extends StatefulWidget {
 }
 
 class _CardListScreenState extends State<CardListScreen> {
-  final SupabaseClient supabase = Supabase.instance.client;
+  final TradeService tradeService = TradeService();
   List<PokemonCard> cards = [];
   List<PokemonCard> filteredCards = [];
+  bool isLoading = false;
+  late String currentUserId;
   String searchQuery = '';
   String? selectedExpansion;
-  bool isLoading = false;
 
   @override
   void initState() {
     super.initState();
+    final user = tradeService.supabase.auth.currentUser;
+    if (user == null) {
+      Navigator.of(context).pushReplacementNamed('/login');
+      return;
+    }
+    currentUserId = user.id.toString();
     _fetchCards();
   }
 
   Future<void> _fetchCards() async {
     setState(() => isLoading = true);
     try {
-      final response = await supabase
-          .from('pokemon_cards')
-          .select()
-          .order('expansion_number', ascending: true);
-
-      if (response.isEmpty) {
-        print('No data returned from Supabase');
-      }
-
-      setState(() {
-        cards =
-            (response as List)
-                .map((json) => PokemonCard.fromJson(json))
-                .toList();
-        filteredCards = cards;
-        isLoading = false;
-      });
+      cards = await tradeService.fetchCardsWithTradeCounts(currentUserId);
+      _filterCards();
+      setState(() => isLoading = false);
     } catch (e) {
-      print('Error fetching cards: $e'); // Log dell'errore
+      print('Errore in _fetchCards: $e');
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error loading cards: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Errore nel caricamento delle carte. Riprova più tardi.')),
+        );
       }
       setState(() => isLoading = false);
     }
   }
 
   void _filterCards() {
-    setState(() {
-      filteredCards =
-          cards.where((card) {
-            final matchesSearch = card.name.toLowerCase().contains(
-              searchQuery.toLowerCase(),
-            );
-            final matchesExpansion =
-                selectedExpansion == null ||
-                card.expansion == selectedExpansion;
-            return matchesSearch && matchesExpansion;
-          }).toList();
-    });
+    filteredCards = cards.where((card) {
+      final matchesSearch = card.name.toLowerCase().contains(searchQuery.toLowerCase());
+      final matchesExpansion = selectedExpansion == null || card.expansion == selectedExpansion;
+      return matchesSearch && matchesExpansion;
+    }).toList();
   }
 
-  Future<void> _toggleTradeStatus(PokemonCard card, bool isWanted) async {
+  Future<void> _addTrade(String cardId, bool isWanted) async {
     try {
-      await supabase.from('pokemon_trades').upsert({
-        'user_id': supabase.auth.currentUser?.id,
-        'card_id': card.id,
-        'is_wanted': isWanted,
-      });
+      await tradeService.addTrade(cardId, isWanted, currentUserId);
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Trade status updated!')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(isWanted ? 'Carta aggiunta ai cercati' : 'Carta aggiunta agli offerti'),
+        ));
       }
+      await _fetchCards();
     } catch (e) {
+      print('Errore in _addTrade: $e');
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error updating trade: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore nell\'aggiunta del trade: $e')));
       }
+    }
+  }
+
+  Future<void> _removeTrade(String cardId) async {
+    try {
+      final tradeResponse = await tradeService.supabase
+          .from('pokemon_trades')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .eq('card_id', cardId)
+          .single();
+      final tradeId = tradeResponse['id'].toString();
+      await tradeService.removeTrade(tradeId);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Trade rimosso con successo')));
+      }
+      await _fetchCards();
+    } catch (e) {
+      print('Errore in _removeTrade: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore nella rimozione del trade: $e')));
+      }
+    }
+  }
+
+  Future<void> _signOut() async {
+    await tradeService.signOut();
+    if (mounted) {
+      Navigator.of(context).pushReplacementNamed('/login');
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final expansions = cards.map((card) => card.expansion).toSet().toList();
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Pokémon TCG Trade'),
+        title: const Text('Pokémon TCG Trade', style: TextStyle(fontSize: 18)),
         elevation: 0,
         backgroundColor: Theme.of(context).colorScheme.surface,
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8.0),
+            child: Row(
+              children: [
+                GestureDetector(
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const TradeListScreen())),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.list_alt, size: 20),
+                      SizedBox(width: 4),
+                      Text('Tutti i Trades', style: TextStyle(fontSize: 14)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.logout, size: 20),
+                  onPressed: _signOut,
+                  tooltip: 'Esci',
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
       body: Column(
         children: [
-          _buildSearchAndFilter(),
-          Expanded(
-            child:
-                isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _buildGroupedCardList(),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildGroupedCardList() {
-    // Raggruppa le carte per codice espansione estratto dall'id
-    Map<String, List<PokemonCard>> groupedCards = {};
-    Map<String, String> codeToExpansionName =
-        {}; // Mappa codice -> nome espansione
-    for (var card in filteredCards) {
-      String expansionCode =
-          card.id.split('-')[0]; // Estrai il codice dall'id (es. "a1")
-      groupedCards.putIfAbsent(expansionCode, () => []).add(card);
-      // Associa il codice al nome dell'espansione (assume che sia lo stesso per tutte le carte del gruppo)
-      codeToExpansionName[expansionCode] = card.expansion;
-    }
-
-    // Ottieni la lista dei codici espansione e ordinala
-    List<String> sortedExpansions =
-        groupedCards.keys.toList()
-          ..sort((a, b) => a.compareTo(b)); // Ordinamento naturale per codice
-
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: sortedExpansions.length,
-      itemBuilder: (context, index) {
-        String expansionCode = sortedExpansions[index];
-        List<PokemonCard> expansionCards = groupedCards[expansionCode]!;
-        String expansionName =
-            codeToExpansionName[expansionCode]!; // Nome dell'espansione
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Titolo dell'espansione (usiamo il nome)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8.0),
-              child: Text(
-                expansionName,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: TextField(
+              decoration: const InputDecoration(
+                hintText: 'Cerca carte...',
+                prefixIcon: Icon(Icons.search),
+                border: OutlineInputBorder(),
               ),
-            ),
-            // Griglia delle carte per questa espansione
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount:
-                    MediaQuery.of(context).size.width > 1200 ? 4 : 2,
-                childAspectRatio: 0.7,
-                crossAxisSpacing: 16,
-                mainAxisSpacing: 16,
-              ),
-              itemCount: expansionCards.length,
-              itemBuilder:
-                  (context, cardIndex) =>
-                      _buildCardItem(expansionCards[cardIndex]),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildSearchAndFilter() {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          TextField(
-            decoration: InputDecoration(
-              hintText: 'Search cards...',
-              prefixIcon: const Icon(Icons.search),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-            onChanged: (value) {
-              searchQuery = value;
-              _filterCards();
-            },
-          ),
-          const SizedBox(height: 8),
-          DropdownButton<String>(
-            value: selectedExpansion,
-            hint: const Text('Select Expansion'),
-            isExpanded: true,
-            items:
-                cards
-                    .map((e) => e.expansion)
-                    .toSet()
-                    .map(
-                      (expansion) => DropdownMenuItem(
-                        value: expansion,
-                        child: Text(expansion),
-                      ),
-                    )
-                    .toList(),
-            onChanged: (value) {
-              selectedExpansion = value;
-              _filterCards();
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCardItem(PokemonCard card) {
-    return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Stack(
-        children: [
-          // L'immagine come sfondo che riempie tutta la card
-          Positioned.fill(
-            child: Image.network(
-              card.imageUrl,
-              fit: BoxFit.cover,
-              // Immagine che copre tutta la card senza essere tagliata
-              loadingBuilder: (context, child, loadingProgress) {
-                if (loadingProgress == null) return child;
-                return const Center(child: CircularProgressIndicator());
+              onChanged: (value) {
+                setState(() {
+                  searchQuery = value;
+                  _filterCards();
+                });
               },
             ),
           ),
-
-          // Informazioni sovrapposte sopra l'immagine
-          Positioned(
-            bottom: 16,
-            left: 16,
-            right: 16,
-            child: Container(
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: DropdownButton<String>(
+              hint: const Text('Seleziona espansione'),
+              value: selectedExpansion,
+              isExpanded: true,
+              items: expansions.map((expansion) => DropdownMenuItem(value: expansion, child: Text(expansion))).toList(),
+              onChanged: (value) {
+                setState(() {
+                  selectedExpansion = value;
+                  _filterCards();
+                });
+              },
+            ),
+          ),
+          Expanded(
+            child: isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : filteredCards.isEmpty
+                ? const Center(child: Text('Nessuna carta disponibile.', style: TextStyle(fontSize: 16)))
+                : GridView.builder(
               padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.5),
-                // Trasparenza per migliorare la leggibilità
-                borderRadius: BorderRadius.circular(8),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 4,
+                childAspectRatio: 0.7,
+                crossAxisSpacing: 8,
+                mainAxisSpacing: 8,
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Non mostriamo più il nome
-                  Text(
-                    '${card.expansion} - #${card.expansionNumber}',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      IconButton(
-                        icon: const Icon(
-                          Icons.add_shopping_cart,
-                          color: Colors.white,
-                        ),
-                        onPressed: () => _toggleTradeStatus(card, true),
-                        tooltip: 'I want this',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.swap_horiz, color: Colors.white),
-                        onPressed: () => _toggleTradeStatus(card, false),
-                        tooltip: 'I have this',
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+              itemCount: filteredCards.length,
+              itemBuilder: (context, index) {
+                final card = filteredCards[index];
+                return PokemonCardWidget(
+                  imageUrl: card.imageUrl,
+                  name: card.name,
+                  isOfferedByUser: card.isOffered,
+                  isWantedByUser: card.isWanted,
+                  offeredCount: card.offeredCount ?? 0,
+                  wantedCount: card.wantedCount ?? 0,
+                  onOfferPressed: () async => await _addTrade(card.id, false),
+                  onWantPressed: () async => await _addTrade(card.id, true),
+                  onRemoveOfferPressed: () async => await _removeTrade(card.id),
+                  onRemoveWantPressed: () async => await _removeTrade(card.id),
+                );
+              },
             ),
           ),
         ],

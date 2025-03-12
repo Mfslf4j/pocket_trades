@@ -1,7 +1,7 @@
-// lib/main.dart
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/card_list_screen.dart';
+import 'screens/login_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -36,8 +36,31 @@ class MyApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const CardListScreen(),
+      home: AuthStateWrapper(),
       debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class AuthStateWrapper extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<AuthState>(
+      stream: Supabase.instance.client.auth.onAuthStateChange,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        final session = snapshot.data?.session;
+        if (session != null) {
+          return const CardListScreen();
+        } else {
+          return const LoginScreen();
+        }
+      },
     );
   }
 }
